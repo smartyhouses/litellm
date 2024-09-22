@@ -15,6 +15,12 @@ import requests  # type: ignore
 import litellm
 from litellm._logging import print_verbose, verbose_logger
 from litellm.integrations.custom_logger import CustomLogger
+from litellm.proxy._types import UserAPIKeyAuth
+
+REQUESTED_MODEL = "requested_model"
+EXCEPTION_STATUS = "exception_status"
+EXCEPTION_CLASS = "exception_class"
+EXCEPTION_LABELS = [EXCEPTION_STATUS, EXCEPTION_CLASS]
 
 
 class PrometheusLogger(CustomLogger):
@@ -26,34 +32,41 @@ class PrometheusLogger(CustomLogger):
         try:
             from prometheus_client import Counter, Gauge, Histogram
 
-            from litellm.proxy.proxy_server import premium_user
+            from litellm.proxy.proxy_server import CommonProxyErrors, premium_user
 
-            verbose_logger.warning(
-                "🚨🚨🚨 Prometheus Metrics will be moving to LiteLLM Enterprise on September 15th, 2024.\n🚨 Contact us here to get a license https://calendly.com/d/4mp-gd3-k5k/litellm-1-1-onboarding-chat \n🚨 Enterprise Pricing: https://www.litellm.ai/#pricing"
-            )
+            if premium_user is not True:
+                verbose_logger.warning(
+                    f"🚨🚨🚨 Prometheus Metrics is on LiteLLM Enterprise\n🚨 {CommonProxyErrors.not_premium_user.value}"
+                )
+                self.litellm_not_a_premium_user_metric = Counter(
+                    name="litellm_not_a_premium_user_metric",
+                    documentation=f"🚨🚨🚨 Prometheus Metrics is on LiteLLM Enterprise. 🚨 {CommonProxyErrors.not_premium_user.value}",
+                )
+                return
 
-            self.litellm_llm_api_failed_requests_metric = Counter(
-                name="litellm_llm_api_failed_requests_metric",
-                documentation="Total number of failed LLM API calls via litellm - track fails per API Key, team, user",
+            self.litellm_proxy_failed_requests_metric = Counter(
+                name="litellm_proxy_failed_requests_metric",
+                documentation="Total number of failed responses from proxy - the client did not get a success response from litellm proxy",
                 labelnames=[
                     "end_user",
                     "hashed_api_key",
                     "api_key_alias",
-                    "model",
+                    REQUESTED_MODEL,
                     "team",
                     "team_alias",
                     "user",
-                ],
+                ]
+                + EXCEPTION_LABELS,
             )
 
-            self.litellm_requests_metric = Counter(
-                name="litellm_requests_metric",
-                documentation="Total number of LLM calls to litellm - track total per API Key, team, user",
+            self.litellm_proxy_total_requests_metric = Counter(
+                name="litellm_proxy_total_requests_metric",
+                documentation="Total number of requests made to the proxy server - track number of client side requests",
                 labelnames=[
                     "end_user",
                     "hashed_api_key",
                     "api_key_alias",
-                    "model",
+                    REQUESTED_MODEL,
                     "team",
                     "team_alias",
                     "user",
@@ -138,83 +151,114 @@ class PrometheusLogger(CustomLogger):
                 labelnames=["hashed_api_key", "api_key_alias", "model"],
             )
 
-            # Litellm-Enterprise Metrics
-            if premium_user is True:
+            ########################################
+            # LLM API Deployment Metrics / analytics
+            ########################################
 
-                ########################################
-                # LLM API Deployment Metrics / analytics
-                ########################################
-
-                # Remaining Rate Limit for model
-                self.litellm_remaining_requests_metric = Gauge(
-                    "litellm_remaining_requests",
-                    "LLM Deployment Analytics - remaining requests for model, returned from LLM API Provider",
-                    labelnames=[
-                        "model_group",
-                        "api_provider",
-                        "api_base",
-                        "litellm_model_name",
-                    ],
-                )
-
-                self.litellm_remaining_tokens_metric = Gauge(
-                    "litellm_remaining_tokens",
-                    "remaining tokens for model, returned from LLM API Provider",
-                    labelnames=[
-                        "model_group",
-                        "api_provider",
-                        "api_base",
-                        "litellm_model_name",
-                    ],
-                )
-                # Get all keys
-                _logged_llm_labels = [
-                    "litellm_model_name",
-                    "model_id",
-                    "api_base",
+            # Remaining Rate Limit for model
+            self.litellm_remaining_requests_metric = Gauge(
+                "litellm_remaining_requests",
+                "LLM Deployment Analytics - remaining requests for model, returned from LLM API Provider",
+                labelnames=[
+                    "model_group",
                     "api_provider",
-                ]
+                    "api_base",
+                    "litellm_model_name",
+                ],
+            )
 
-                # Metric for deployment state
-                self.litellm_deployment_state = Gauge(
-                    "litellm_deployment_state",
-                    "LLM Deployment Analytics - The state of the deployment: 0 = healthy, 1 = partial outage, 2 = complete outage",
-                    labelnames=_logged_llm_labels,
-                )
+            self.litellm_remaining_tokens_metric = Gauge(
+                "litellm_remaining_tokens",
+                "remaining tokens for model, returned from LLM API Provider",
+                labelnames=[
+                    "model_group",
+                    "api_provider",
+                    "api_base",
+                    "litellm_model_name",
+                ],
+            )
+            # Get all keys
+            _logged_llm_labels = [
+                "litellm_model_name",
+                "model_id",
+                "api_base",
+                "api_provider",
+            ]
 
-                self.litellm_deployment_success_responses = Counter(
-                    name="litellm_deployment_success_responses",
-                    documentation="LLM Deployment Analytics - Total number of successful LLM API calls via litellm",
-                    labelnames=_logged_llm_labels,
-                )
-                self.litellm_deployment_failure_responses = Counter(
-                    name="litellm_deployment_failure_responses",
-                    documentation="LLM Deployment Analytics - Total number of failed LLM API calls via litellm",
-                    labelnames=_logged_llm_labels,
-                )
-                self.litellm_deployment_total_requests = Counter(
-                    name="litellm_deployment_total_requests",
-                    documentation="LLM Deployment Analytics - Total number of LLM API calls via litellm - success + failure",
-                    labelnames=_logged_llm_labels,
-                )
+            # Metric for deployment state
+            self.litellm_deployment_state = Gauge(
+                "litellm_deployment_state",
+                "LLM Deployment Analytics - The state of the deployment: 0 = healthy, 1 = partial outage, 2 = complete outage",
+                labelnames=_logged_llm_labels,
+            )
 
-                # Deployment Latency tracking
-                self.litellm_deployment_latency_per_output_token = Histogram(
-                    name="litellm_deployment_latency_per_output_token",
-                    documentation="LLM Deployment Analytics - Latency per output token",
-                    labelnames=_logged_llm_labels,
-                )
+            self.litellm_deployment_cooled_down = Counter(
+                "litellm_deployment_cooled_down",
+                "LLM Deployment Analytics - Number of times a deployment has been cooled down by LiteLLM load balancing logic. exception_status is the status of the exception that caused the deployment to be cooled down",
+                labelnames=_logged_llm_labels + [EXCEPTION_STATUS],
+            )
 
-                self.litellm_deployment_successful_fallbacks = Counter(
-                    "litellm_deployment_successful_fallbacks",
-                    "LLM Deployment Analytics - Number of successful fallback requests from primary model -> fallback model",
-                    ["primary_model", "fallback_model"],
-                )
-                self.litellm_deployment_failed_fallbacks = Counter(
-                    "litellm_deployment_failed_fallbacks",
-                    "LLM Deployment Analytics - Number of failed fallback requests from primary model -> fallback model",
-                    ["primary_model", "fallback_model"],
-                )
+            self.litellm_deployment_success_responses = Counter(
+                name="litellm_deployment_success_responses",
+                documentation="LLM Deployment Analytics - Total number of successful LLM API calls via litellm",
+                labelnames=[REQUESTED_MODEL] + _logged_llm_labels,
+            )
+            self.litellm_deployment_failure_responses = Counter(
+                name="litellm_deployment_failure_responses",
+                documentation="LLM Deployment Analytics - Total number of failed LLM API calls for a specific LLM deploymeny. exception_status is the status of the exception from the llm api",
+                labelnames=[REQUESTED_MODEL] + _logged_llm_labels + EXCEPTION_LABELS,
+            )
+            self.litellm_deployment_total_requests = Counter(
+                name="litellm_deployment_total_requests",
+                documentation="LLM Deployment Analytics - Total number of LLM API calls via litellm - success + failure",
+                labelnames=[REQUESTED_MODEL] + _logged_llm_labels,
+            )
+
+            # Deployment Latency tracking
+            self.litellm_deployment_latency_per_output_token = Histogram(
+                name="litellm_deployment_latency_per_output_token",
+                documentation="LLM Deployment Analytics - Latency per output token",
+                labelnames=_logged_llm_labels,
+            )
+
+            self.litellm_deployment_successful_fallbacks = Counter(
+                "litellm_deployment_successful_fallbacks",
+                "LLM Deployment Analytics - Number of successful fallback requests from primary model -> fallback model",
+                ["primary_model", "fallback_model"],
+            )
+            self.litellm_deployment_failed_fallbacks = Counter(
+                "litellm_deployment_failed_fallbacks",
+                "LLM Deployment Analytics - Number of failed fallback requests from primary model -> fallback model",
+                ["primary_model", "fallback_model"],
+            )
+
+            self.litellm_llm_api_failed_requests_metric = Counter(
+                name="litellm_llm_api_failed_requests_metric",
+                documentation="deprecated - use litellm_proxy_failed_requests_metric",
+                labelnames=[
+                    "end_user",
+                    "hashed_api_key",
+                    "api_key_alias",
+                    "model",
+                    "team",
+                    "team_alias",
+                    "user",
+                ],
+            )
+
+            self.litellm_requests_metric = Counter(
+                name="litellm_requests_metric",
+                documentation="deprecated - use litellm_proxy_total_requests_metric. Total number of LLM calls to litellm - track total per API Key, team, user",
+                labelnames=[
+                    "end_user",
+                    "hashed_api_key",
+                    "api_key_alias",
+                    "model",
+                    "team",
+                    "team_alias",
+                    "user",
+                ],
+            )
 
         except Exception as e:
             print_verbose(f"Got exception on init prometheus client {str(e)}")
@@ -225,7 +269,6 @@ class PrometheusLogger(CustomLogger):
         from litellm.proxy.common_utils.callback_utils import (
             get_model_group_from_litellm_kwargs,
         )
-        from litellm.proxy.proxy_server import premium_user
 
         verbose_logger.debug(
             f"prometheus Logging - Enters success logging function for kwargs {kwargs}"
@@ -349,32 +392,34 @@ class PrometheusLogger(CustomLogger):
         # latency metrics
         total_time: timedelta = kwargs.get("end_time") - kwargs.get("start_time")
         total_time_seconds = total_time.total_seconds()
-        api_call_total_time: timedelta = kwargs.get("end_time") - kwargs.get(
-            "api_call_start_time"
-        )
+        api_call_start_time = kwargs.get("api_call_start_time", None)
 
-        api_call_total_time_seconds = api_call_total_time.total_seconds()
+        if api_call_start_time is not None and isinstance(
+            api_call_start_time, datetime
+        ):
+            api_call_total_time: timedelta = (
+                kwargs.get("end_time") - api_call_start_time
+            )
+            api_call_total_time_seconds = api_call_total_time.total_seconds()
+            self.litellm_llm_api_latency_metric.labels(model).observe(
+                api_call_total_time_seconds
+            )
 
         # log metrics
         self.litellm_request_total_latency_metric.labels(model).observe(
             total_time_seconds
         )
-        self.litellm_llm_api_latency_metric.labels(model).observe(
-            api_call_total_time_seconds
-        )
 
         # set x-ratelimit headers
-        if premium_user is True:
-            self.set_llm_deployment_success_metrics(
-                kwargs, start_time, end_time, output_tokens
-            )
+        self.set_llm_deployment_success_metrics(
+            kwargs, start_time, end_time, output_tokens
+        )
         pass
 
     async def async_log_failure_event(self, kwargs, response_obj, start_time, end_time):
-        from litellm.proxy.proxy_server import premium_user
 
         verbose_logger.debug(
-            f"prometheus Logging - Enters success logging function for kwargs {kwargs}"
+            f"prometheus Logging - Enters failure logging function for kwargs {kwargs}"
         )
 
         # unpack kwargs
@@ -393,6 +438,7 @@ class PrometheusLogger(CustomLogger):
         user_api_team_alias = litellm_params.get("metadata", {}).get(
             "user_api_key_team_alias", None
         )
+        exception = kwargs.get("exception", None)
 
         try:
             self.litellm_llm_api_failed_requests_metric.labels(
@@ -412,6 +458,77 @@ class PrometheusLogger(CustomLogger):
             pass
         pass
 
+    async def async_post_call_failure_hook(
+        self,
+        request_data: dict,
+        original_exception: Exception,
+        user_api_key_dict: UserAPIKeyAuth,
+    ):
+        """
+        Track client side failures
+
+        Proxy level tracking - failed client side requests
+
+        labelnames=[
+                    "end_user",
+                    "hashed_api_key",
+                    "api_key_alias",
+                    REQUESTED_MODEL,
+                    "team",
+                    "team_alias",
+                ] + EXCEPTION_LABELS,
+        """
+        try:
+            self.litellm_proxy_failed_requests_metric.labels(
+                end_user=user_api_key_dict.end_user_id,
+                hashed_api_key=user_api_key_dict.api_key,
+                api_key_alias=user_api_key_dict.key_alias,
+                requested_model=request_data.get("model", ""),
+                team=user_api_key_dict.team_id,
+                team_alias=user_api_key_dict.team_alias,
+                user=user_api_key_dict.user_id,
+                exception_status=getattr(original_exception, "status_code", None),
+                exception_class=str(original_exception.__class__.__name__),
+            ).inc()
+
+            self.litellm_proxy_total_requests_metric.labels(
+                user_api_key_dict.end_user_id,
+                user_api_key_dict.api_key,
+                user_api_key_dict.key_alias,
+                request_data.get("model", ""),
+                user_api_key_dict.team_id,
+                user_api_key_dict.team_alias,
+                user_api_key_dict.user_id,
+            ).inc()
+            pass
+        except Exception as e:
+            verbose_logger.exception(
+                "prometheus Layer Error(): Exception occured - {}".format(str(e))
+            )
+            pass
+
+    async def async_post_call_success_hook(
+        self, data: dict, user_api_key_dict: UserAPIKeyAuth, response
+    ):
+        """
+        Proxy level tracking - triggered when the proxy responds with a success response to the client
+        """
+        try:
+            self.litellm_proxy_total_requests_metric.labels(
+                user_api_key_dict.end_user_id,
+                user_api_key_dict.api_key,
+                user_api_key_dict.key_alias,
+                data.get("model", ""),
+                user_api_key_dict.team_id,
+                user_api_key_dict.team_alias,
+                user_api_key_dict.user_id,
+            ).inc()
+        except Exception as e:
+            verbose_logger.exception(
+                "prometheus Layer Error(): Exception occured - {}".format(str(e))
+            )
+            pass
+
     def set_llm_deployment_failure_metrics(self, request_kwargs: dict):
         try:
             verbose_logger.debug("setting remaining tokens requests metric")
@@ -420,8 +537,13 @@ class PrometheusLogger(CustomLogger):
             _metadata = _litellm_params.get("metadata", {})
             litellm_model_name = request_kwargs.get("model", None)
             api_base = _metadata.get("api_base", None)
+            model_group = _metadata.get("model_group", None)
+            if api_base is None:
+                api_base = _litellm_params.get("api_base", None)
             llm_provider = _litellm_params.get("custom_llm_provider", None)
-            model_id = _metadata.get("model_id")
+            _model_info = _metadata.get("model_info") or {}
+            model_id = _model_info.get("id", None)
+            exception: Exception = request_kwargs.get("exception", None)
 
             """
             log these labels
@@ -433,12 +555,14 @@ class PrometheusLogger(CustomLogger):
                 api_base=api_base,
                 api_provider=llm_provider,
             )
-
             self.litellm_deployment_failure_responses.labels(
                 litellm_model_name=litellm_model_name,
                 model_id=model_id,
                 api_base=api_base,
                 api_provider=llm_provider,
+                exception_status=str(getattr(exception, "status_code", None)),
+                exception_class=exception.__class__.__name__,
+                requested_model=model_group,
             ).inc()
 
             self.litellm_deployment_total_requests.labels(
@@ -446,6 +570,7 @@ class PrometheusLogger(CustomLogger):
                 model_id=model_id,
                 api_base=api_base,
                 api_provider=llm_provider,
+                requested_model=model_group,
             ).inc()
 
             pass
@@ -467,8 +592,11 @@ class PrometheusLogger(CustomLogger):
             litellm_model_name = request_kwargs.get("model", None)
             model_group = _metadata.get("model_group", None)
             api_base = _metadata.get("api_base", None)
+            if api_base is None:
+                api_base = _litellm_params.get("api_base", None)
             llm_provider = _litellm_params.get("custom_llm_provider", None)
-            model_id = _metadata.get("model_id")
+            _model_info = _metadata.get("model_info") or {}
+            model_id = _model_info.get("id", None)
 
             remaining_requests = None
             remaining_tokens = None
@@ -505,7 +633,7 @@ class PrometheusLogger(CustomLogger):
 
             """
             log these labels
-            ["litellm_model_name", "model_id", "api_base", "api_provider"]
+            ["litellm_model_name", "requested_model", model_id", "api_base", "api_provider"]
             """
             self.set_deployment_healthy(
                 litellm_model_name=litellm_model_name,
@@ -519,6 +647,7 @@ class PrometheusLogger(CustomLogger):
                 model_id=model_id,
                 api_base=api_base,
                 api_provider=llm_provider,
+                requested_model=model_group,
             ).inc()
 
             self.litellm_deployment_total_requests.labels(
@@ -526,6 +655,7 @@ class PrometheusLogger(CustomLogger):
                 model_id=model_id,
                 api_base=api_base,
                 api_provider=llm_provider,
+                requested_model=model_group,
             ).inc()
 
             # Track deployment Latency
@@ -632,6 +762,21 @@ class PrometheusLogger(CustomLogger):
         self.set_litellm_deployment_state(
             2, litellm_model_name, model_id, api_base, api_provider
         )
+
+    def increment_deployment_cooled_down(
+        self,
+        litellm_model_name: str,
+        model_id: str,
+        api_base: str,
+        api_provider: str,
+        exception_status: str,
+    ):
+        """
+        increment metric when litellm.Router / load balancing logic places a deployment in cool down
+        """
+        self.litellm_deployment_cooled_down.labels(
+            litellm_model_name, model_id, api_base, api_provider, exception_status
+        ).inc()
 
 
 def safe_get_remaining_budget(

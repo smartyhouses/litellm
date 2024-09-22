@@ -35,7 +35,7 @@ litellm_settings:
 
 #### [OPTIONAL] Step 1.5: Add redis namespaces, default ttl 
 
-## Namespace
+#### Namespace
 If you want to create some folder for your keys, you can set a namespace, like this:
 
 ```yaml
@@ -52,7 +52,11 @@ and keys will be stored like:
 litellm_caching:<hash>
 ```
 
-## Redis Cluster 
+#### Redis Cluster 
+
+<Tabs>
+
+<TabItem value="redis-cluster-config" label="Set on config.yaml">
 
 ```yaml
 model_list:
@@ -68,7 +72,99 @@ litellm_settings:
     redis_startup_nodes: [{"host": "127.0.0.1", "port": "7001"}] 
 ```
 
-## TTL
+</TabItem>
+
+<TabItem value="redis-env" label="Set on .env">
+
+You can configure redis cluster in your .env by setting `REDIS_CLUSTER_NODES` in your .env
+
+**Example `REDIS_CLUSTER_NODES`** value
+
+```
+REDIS_CLUSTER_NODES = "[{"host": "127.0.0.1", "port": "7001"}, {"host": "127.0.0.1", "port": "7003"}, {"host": "127.0.0.1", "port": "7004"}, {"host": "127.0.0.1", "port": "7005"}, {"host": "127.0.0.1", "port": "7006"}, {"host": "127.0.0.1", "port": "7007"}]"
+```
+
+:::note
+
+Example python script for setting redis cluster nodes in .env:
+
+```python
+# List of startup nodes
+startup_nodes = [
+    {"host": "127.0.0.1", "port": "7001"},
+    {"host": "127.0.0.1", "port": "7003"},
+    {"host": "127.0.0.1", "port": "7004"},
+    {"host": "127.0.0.1", "port": "7005"},
+    {"host": "127.0.0.1", "port": "7006"},
+    {"host": "127.0.0.1", "port": "7007"},
+]
+
+# set startup nodes in environment variables
+os.environ["REDIS_CLUSTER_NODES"] = json.dumps(startup_nodes)
+print("REDIS_CLUSTER_NODES", os.environ["REDIS_CLUSTER_NODES"])
+```
+
+:::
+
+</TabItem>
+
+</Tabs>
+
+#### Redis Sentinel 
+
+
+<Tabs>
+
+<TabItem value="redis-sentinel-config" label="Set on config.yaml">
+
+```yaml
+model_list:
+  - model_name: "*"
+    litellm_params:
+      model: "*"
+
+
+litellm_settings:
+  cache: true
+  cache_params:
+    type: "redis"
+    service_name: "mymaster"
+    sentinel_nodes: [["localhost", 26379]]
+```
+
+</TabItem>
+
+<TabItem value="redis-env" label="Set on .env">
+
+You can configure redis sentinel in your .env by setting `REDIS_SENTINEL_NODES` in your .env
+
+**Example `REDIS_SENTINEL_NODES`** value
+
+```env
+REDIS_SENTINEL_NODES='[["localhost", 26379]]'
+REDIS_SERVICE_NAME = "mymaster"
+```
+
+:::note
+
+Example python script for setting redis cluster nodes in .env:
+
+```python
+# List of startup nodes
+sentinel_nodes = [["localhost", 26379]]
+
+# set startup nodes in environment variables
+os.environ["REDIS_SENTINEL_NODES"] = json.dumps(sentinel_nodes)
+print("REDIS_SENTINEL_NODES", os.environ["REDIS_SENTINEL_NODES"])
+```
+
+:::
+
+</TabItem>
+
+</Tabs>
+
+#### TTL
 
 ```yaml
 litellm_settings:
@@ -81,7 +177,7 @@ litellm_settings:
 ```
 
 
-## SSL
+#### SSL
 
 just set `REDIS_SSL="True"` in your .env, and LiteLLM will pick this up. 
 
@@ -397,7 +493,7 @@ litellm_settings:
                       # /chat/completions, /completions, /embeddings, /audio/transcriptions
 ```
 
-### Turn on / off caching per request.  
+### **Turn on / off caching per request. **
 
 The proxy support 4 cache-controls:
 
@@ -698,6 +794,73 @@ x-litellm-cache-key: 586bf3f3c1bf5aecb55bd9996494d3bbc69eb58397163add6d49537762a
 }
              
 ```
+
+### **Set Caching Default Off - Opt in only **
+
+1. **Set `mode: default_off` for caching**
+
+```yaml
+model_list:
+  - model_name: fake-openai-endpoint
+    litellm_params:
+      model: openai/fake
+      api_key: fake-key
+      api_base: https://exampleopenaiendpoint-production.up.railway.app/
+
+# default off mode
+litellm_settings:
+  set_verbose: True
+  cache: True
+  cache_params:
+    mode: default_off # 👈 Key change cache is default_off
+```
+
+2. **Opting in to cache when cache is default off**
+
+
+<Tabs>
+<TabItem value="openai" label="OpenAI Python SDK">
+
+```python
+import os
+from openai import OpenAI
+
+client = OpenAI(api_key=<litellm-api-key>, base_url="http://0.0.0.0:4000")
+
+chat_completion = client.chat.completions.create(
+    messages=[
+        {
+            "role": "user",
+            "content": "Say this is a test",
+        }
+    ],
+    model="gpt-3.5-turbo",
+    extra_body = {        # OpenAI python accepts extra args in extra_body
+        "cache": {"use-cache": True}
+    }
+)
+```
+</TabItem>
+
+<TabItem value="curl" label="curl">
+
+```shell
+curl http://localhost:4000/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer sk-1234" \
+  -d '{
+    "model": "gpt-3.5-turbo",
+    "cache": {"use-cache": True}
+    "messages": [
+      {"role": "user", "content": "Say this is a test"}
+    ]
+  }'
+```
+
+</TabItem>
+
+</Tabs>
+
 
 
 ### Turn on `batch_redis_requests` 

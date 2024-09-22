@@ -3,6 +3,7 @@ import asyncio
 import json
 import traceback
 from base64 import b64encode
+from datetime import datetime
 from typing import AsyncIterable, List, Optional
 
 import httpx
@@ -20,6 +21,10 @@ from fastapi.responses import StreamingResponse
 import litellm
 from litellm._logging import verbose_proxy_logger
 from litellm.integrations.custom_logger import CustomLogger
+from litellm.litellm_core_utils.litellm_logging import Logging as LiteLLMLoggingObj
+from litellm.llms.vertex_ai_and_google_ai_studio.gemini.vertex_and_google_ai_studio_gemini import (
+    ModelResponseIterator,
+)
 from litellm.proxy._types import (
     ConfigFieldInfo,
     ConfigFieldUpdate,
@@ -29,8 +34,22 @@ from litellm.proxy._types import (
     UserAPIKeyAuth,
 )
 from litellm.proxy.auth.user_api_key_auth import user_api_key_auth
+from litellm.secret_managers.main import get_secret_str
+
+from .streaming_handler import chunk_processor
+from .success_handler import PassThroughEndpointLogging
+from .types import EndpointType, PassthroughStandardLoggingPayload
 
 router = APIRouter()
+
+pass_through_endpoint_logging = PassThroughEndpointLogging()
+
+
+def get_response_body(response: httpx.Response):
+    try:
+        return response.json()
+    except Exception:
+        return response.text
 
 
 async def set_env_variables_in_header(custom_headers: dict):
@@ -54,11 +73,11 @@ async def set_env_variables_in_header(custom_headers: dict):
             if isinstance(
                 _langfuse_public_key, str
             ) and _langfuse_public_key.startswith("os.environ/"):
-                _langfuse_public_key = litellm.get_secret(_langfuse_public_key)
+                _langfuse_public_key = get_secret_str(_langfuse_public_key)
             if isinstance(
                 _langfuse_secret_key, str
             ) and _langfuse_secret_key.startswith("os.environ/"):
-                _langfuse_secret_key = litellm.get_secret(_langfuse_secret_key)
+                _langfuse_secret_key = get_secret_str(_langfuse_secret_key)
             headers["Authorization"] = "Basic " + b64encode(
                 f"{_langfuse_public_key}:{_langfuse_secret_key}".encode("utf-8")
             ).decode("ascii")
@@ -77,9 +96,10 @@ async def set_env_variables_in_header(custom_headers: dict):
                     "pass through endpoint - getting secret for variable name: %s",
                     _variable_name,
                 )
-                _secret_value = litellm.get_secret(_variable_name)
-                new_value = value.replace(_variable_name, _secret_value)
-                headers[key] = new_value
+                _secret_value = get_secret_str(_variable_name)
+                if _secret_value is not None:
+                    new_value = value.replace(_variable_name, _secret_value)
+                    headers[key] = new_value
     return headers
 
 
@@ -278,6 +298,12 @@ def get_response_headers(headers: httpx.Headers) -> dict:
     return return_headers
 
 
+def get_endpoint_type(url: str) -> EndpointType:
+    if ("generateContent") in url or ("streamGenerateContent") in url:
+        return EndpointType.VERTEX_AI
+    return EndpointType.GENERIC
+
+
 async def pass_through_request(
     request: Request,
     target: str,
@@ -301,6 +327,8 @@ async def pass_through_request(
             request=request, headers=headers, forward_headers=forward_headers
         )
 
+        endpoint_type: EndpointType = get_endpoint_type(str(url))
+
         _parsed_body = None
         if custom_body:
             _parsed_body = custom_body
@@ -323,22 +351,26 @@ async def pass_through_request(
         ### CALL HOOKS ### - modify incoming data / reject request before calling the model
         _parsed_body = await proxy_logging_obj.pre_call_hook(
             user_api_key_dict=user_api_key_dict,
-            data=_parsed_body or {},
+            data=_parsed_body,
             call_type="pass_through_endpoint",
         )
 
         async_client = httpx.AsyncClient(timeout=600)
 
         # create logging object
-        start_time = time.time()
+        start_time = datetime.now()
         logging_obj = Logging(
             model="unknown",
-            messages=[{"role": "user", "content": "no-message-pass-through-endpoint"}],
+            messages=[{"role": "user", "content": json.dumps(_parsed_body)}],
             stream=False,
             call_type="pass_through_endpoint",
             start_time=start_time,
             litellm_call_id=str(uuid.uuid4()),
             function_id="1245",
+        )
+        passthrough_logging_payload = PassthroughStandardLoggingPayload(
+            url=str(url),
+            request_body=_parsed_body,
         )
 
         # done for supporting 'parallel_request_limiter.py' with pass-through endpoints
@@ -352,6 +384,7 @@ async def pass_through_request(
                 }
             },
             "call_type": "pass_through_endpoint",
+            "passthrough_logging_payload": passthrough_logging_payload,
         }
         logging_obj.update_environment_variables(
             model="unknown",
@@ -383,7 +416,7 @@ async def pass_through_request(
                 logging_url = str(url) + "?" + requested_query_params_str
 
         logging_obj.pre_call(
-            input=[{"role": "user", "content": "no-message-pass-through-endpoint"}],
+            input=[{"role": "user", "content": json.dumps(_parsed_body)}],
             api_key="",
             additional_args={
                 "complete_input_dict": _parsed_body,
@@ -410,9 +443,15 @@ async def pass_through_request(
                     status_code=e.response.status_code, detail=await e.response.aread()
                 )
 
-            # Create an async generator to yield the response content
             async def stream_response() -> AsyncIterable[bytes]:
-                async for chunk in response.aiter_bytes():
+                async for chunk in chunk_processor(
+                    response.aiter_bytes(),
+                    litellm_logging_obj=logging_obj,
+                    endpoint_type=endpoint_type,
+                    start_time=start_time,
+                    passthrough_success_handler_obj=pass_through_endpoint_logging,
+                    url_route=str(url),
+                ):
                     yield chunk
 
             return StreamingResponse(
@@ -448,10 +487,15 @@ async def pass_through_request(
                     status_code=e.response.status_code, detail=await e.response.aread()
                 )
 
-            # streaming response
-            # Create an async generator to yield the response content
             async def stream_response() -> AsyncIterable[bytes]:
-                async for chunk in response.aiter_bytes():
+                async for chunk in chunk_processor(
+                    response.aiter_bytes(),
+                    litellm_logging_obj=logging_obj,
+                    endpoint_type=endpoint_type,
+                    start_time=start_time,
+                    passthrough_success_handler_obj=pass_through_endpoint_logging,
+                    url_route=str(url),
+                ):
                     yield chunk
 
             return StreamingResponse(
@@ -473,13 +517,17 @@ async def pass_through_request(
         content = await response.aread()
 
         ## LOG SUCCESS
-        end_time = time.time()
-
-        await logging_obj.async_success_handler(
+        passthrough_logging_payload["response_body"] = get_response_body(response)
+        end_time = datetime.now()
+        await pass_through_endpoint_logging.pass_through_async_success_handler(
+            httpx_response=response,
+            url_route=str(url),
             result="",
             start_time=start_time,
             end_time=end_time,
+            logging_obj=logging_obj,
             cache_hit=False,
+            **kwargs,
         )
 
         return Response(
@@ -530,7 +578,7 @@ def create_pass_through_route(
         adapter_id = str(uuid.uuid4())
         litellm.adapters = [{"id": adapter_id, "adapter": adapter}]
 
-        async def endpoint_func(
+        async def endpoint_func(  # type: ignore
             request: Request,
             fastapi_response: Response,
             user_api_key_dict: UserAPIKeyAuth = Depends(user_api_key_auth),
@@ -601,9 +649,9 @@ async def initialize_pass_through_endpoints(pass_through_endpoints: list):
         verbose_proxy_logger.debug(
             "adding pass through endpoint: %s, dependencies: %s", _path, _dependencies
         )
-        app.add_api_route(
+        app.add_api_route(  # type: ignore
             path=_path,
-            endpoint=create_pass_through_route(
+            endpoint=create_pass_through_route(  # type: ignore
                 _path, _target, _custom_headers, _forward_headers, _dependencies
             ),
             methods=["GET", "POST", "PUT", "DELETE", "PATCH"],

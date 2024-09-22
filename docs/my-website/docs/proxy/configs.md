@@ -259,6 +259,38 @@ model_list:
 $ litellm --config /path/to/config.yaml
 ```
 
+## Use CONFIG_FILE_PATH for proxy (Easier Azure container deployment)
+
+1. Setup config.yaml
+
+```yaml
+model_list:
+  - model_name: gpt-3.5-turbo
+    litellm_params:
+      model: gpt-3.5-turbo
+      api_key: os.environ/OPENAI_API_KEY
+```
+
+2. Store filepath as env var 
+
+```bash
+CONFIG_FILE_PATH="/path/to/config.yaml"
+```
+
+3. Start Proxy
+
+```bash
+$ litellm 
+
+# RUNNING on http://0.0.0.0:4000
+```
+
+**Expected Logs:**
+
+Look for this line in your console logs to confirm the config.yaml was loaded in correctly.
+```
+LiteLLM: Proxy initialized with Config, Set models:
+```
 
 ## Multiple OpenAI Organizations 
 
@@ -409,12 +441,12 @@ You can view your cost once you set up [Virtual keys](https://docs.litellm.ai/do
 
 ## Load API Keys
 
-### Load API Keys from Environment 
+### Load API Keys / config values from Environment 
 
-If you have secrets saved in your environment, and don't want to expose them in the config.yaml, here's how to load model-specific keys from the environment. 
+If you have secrets saved in your environment, and don't want to expose them in the config.yaml, here's how to load model-specific keys from the environment. **This works for ANY value on the config.yaml**
 
-```python
-os.environ["AZURE_NORTH_AMERICA_API_KEY"] = "your-azure-api-key"
+```yaml
+os.environ/<YOUR-ENV-VAR> # runs os.getenv("YOUR-ENV-VAR")
 ```
 
 ```yaml 
@@ -424,7 +456,7 @@ model_list:
       model: azure/chatgpt-v-2
       api_base: https://openai-gpt-4-test-v-1.openai.azure.com/
       api_version: "2023-05-15"
-      api_key: os.environ/AZURE_NORTH_AMERICA_API_KEY
+      api_key: os.environ/AZURE_NORTH_AMERICA_API_KEY # 👈 KEY CHANGE
 ```
 
 [**See Code**](https://github.com/BerriAI/litellm/blob/c12d6c3fe80e1b5e704d9846b246c059defadce7/litellm/utils.py#L2366)
@@ -760,7 +792,8 @@ general_settings:
     "alerting": [
       "string"
     ],
-    "alerting_threshold": 0
+    "alerting_threshold": 0,
+    "use_client_credentials_pass_through_routes" : "boolean", # use client credentials for all pass through routes like "/vertex-ai", /bedrock/. When this is True Virtual Key auth will not be applied on these endpoints" https://docs.litellm.ai/docs/pass_through/vertex_ai
   }
 }
 ```

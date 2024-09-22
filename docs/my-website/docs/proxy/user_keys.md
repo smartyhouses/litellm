@@ -1,7 +1,7 @@
 import Tabs from '@theme/Tabs';
 import TabItem from '@theme/TabItem';
 
-# 💡 Migrating from OpenAI (Langchain, OpenAI SDK, LlamaIndex, Instructor, Curl)
+# Langchain, OpenAI SDK, LlamaIndex, Instructor, Curl examples
 
 LiteLLM Proxy is **OpenAI-Compatible**, and supports:
 * /chat/completions 
@@ -810,6 +810,9 @@ print(result)
 </TabItem>
 </Tabs>
 
+## Using with Vertex, Boto3, Anthropic SDK (Native format)
+
+👉 **[Here's how to use litellm proxy with Vertex, boto3, Anthropic SDK - in the native format](../pass_through/vertex_ai.md)**
 
 ## Advanced
 
