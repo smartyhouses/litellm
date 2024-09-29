@@ -9,6 +9,13 @@ FROM $LITELLM_BUILD_IMAGE AS builder
 # Set the working directory to /app
 WORKDIR /app
 
+RUN echo 'deb http://mirror.yandex.ru/debian/ bookworm main contrib non-free non-free-firmware\n\
+deb-src http://mirror.yandex.ru/debian/ bookworm main contrib non-free non-free-firmware\n\
+deb http://security.debian.org/debian-security bookworm-security main contrib non-free non-free-firmware\n\
+deb-src http://security.debian.org/debian-security bookworm-security main contrib non-free non-free-firmware\n\
+deb http://mirror.yandex.ru/debian/ bookworm-updates main contrib non-free non-free-firmware\n\
+deb-src http://mirror.yandex.ru/debian/ bookworm-updates main contrib non-free-non free firmware' > /etc/apt/sources.list && \
+apt-get update -y
 # Install build dependencies
 RUN apt-get clean && apt-get update && \
     apt-get install -y gcc python3-dev && \
