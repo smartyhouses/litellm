@@ -96,7 +96,7 @@ model_list:
     litellm_params:
       model: "groq/*"
       api_key: os.environ/GROQ_API_KEY
-      api_base: https://groqpr.vercel.app/groq
+      api_base: os.environ/GROQ_BASE_URL
   - model_name: mistral-embed
     litellm_params:
       model: mistral/mistral-embed
@@ -172,9 +172,9 @@ general_settings:
         accept: application/json
       forward_headers: True
 
-environment_variables:
+#environment_variables:
   # settings for using redis caching
   # REDIS_HOST: redis-16337.c322.us-east-1-2.ec2.cloud.redislabs.com
   # REDIS_PORT: "16337"
   # REDIS_PASSWORD: 
-  GROQ_BASE_URL: https://groqpr.vercel.app/groq
+  # GROQ_BASE_URL: https://groqpr.vercel.app/groq
