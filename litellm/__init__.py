@@ -17,13 +17,18 @@ from litellm._logging import (
     _turn_on_json,
     log_level,
 )
-
+from litellm.constants import (
+    DEFAULT_BATCH_SIZE,
+    DEFAULT_FLUSH_INTERVAL_SECONDS,
+    ROUTER_MAX_FALLBACKS,
+)
 from litellm.types.guardrails import GuardrailItem
 from litellm.proxy._types import (
     KeyManagementSystem,
     KeyManagementSettings,
     LiteLLM_UpperboundKeyGenerateParams,
 )
+from litellm.types.utils import StandardKeyGenerationConfig
 import httpx
 import dotenv
 from enum import Enum
@@ -31,10 +36,10 @@ from enum import Enum
 litellm_mode = os.getenv("LITELLM_MODE", "DEV")  # "PRODUCTION", "DEV"
 if litellm_mode == "DEV":
     dotenv.load_dotenv()
-#############################################
+############################################
 if set_verbose == True:
     _turn_on_debug()
-#############################################
+############################################
 ### Callbacks /Logging / Success / Failure Handlers ###
 input_callback: List[Union[str, Callable]] = []
 success_callback: List[Union[str, Callable]] = []
@@ -49,6 +54,7 @@ _custom_logger_compatible_callbacks_literal = Literal[
     "langsmith",
     "prometheus",
     "datadog",
+    "datadog_llm_observability",
     "galileo",
     "braintrust",
     "arize",
@@ -56,6 +62,8 @@ _custom_logger_compatible_callbacks_literal = Literal[
     "gcs_bucket",
     "opik",
     "argilla",
+    "mlflow",
+    "langfuse",
 ]
 logged_real_time_event_types: Optional[Union[List[str], Literal["*"]]] = None
 _known_custom_logger_compatible_callbacks: List = list(
@@ -65,6 +73,7 @@ callbacks: List[Union[Callable, _custom_logger_compatible_callbacks_literal]] = 
 langfuse_default_tags: Optional[List[str]] = None
 langsmith_batch_size: Optional[int] = None
 argilla_batch_size: Optional[int] = None
+datadog_use_v1: Optional[bool] = False  # if you want to use v1 datadog logged payload
 argilla_transformation_object: Optional[Dict[str, Any]] = None
 _async_input_callback: List[Callable] = (
     []
@@ -131,11 +140,13 @@ use_client: bool = False
 ssl_verify: Union[str, bool] = True
 ssl_certificate: Optional[str] = None
 disable_streaming_logging: bool = False
-in_memory_llm_clients_cache: dict = {}
+in_memory_llm_clients_cache: InMemoryCache = InMemoryCache()
 safe_memory_mode: bool = False
 enable_azure_ad_token_refresh: Optional[bool] = False
 ### DEFAULT AZURE API VERSION ###
 AZURE_DEFAULT_API_VERSION = "2024-08-01-preview"  # this is updated to the latest
+### DEFAULT WATSONX API VERSION ###
+WATSONX_DEFAULT_API_VERSION = "2024-03-13"
 ### COHERE EMBEDDINGS DEFAULT TYPE ###
 COHERE_DEFAULT_EMBEDDING_INPUT_TYPE: COHERE_EMBEDDING_INPUT_TYPES = "search_document"
 ### GUARDRAILS ###
@@ -172,6 +183,7 @@ cache: Optional[Cache] = (
 )
 default_in_memory_ttl: Optional[float] = None
 default_redis_ttl: Optional[float] = None
+default_redis_batch_cache_expiry: Optional[float] = None
 model_alias_map: Dict[str, str] = {}
 model_group_alias_map: Dict[str, str] = {}
 max_budget: float = 0.0  # set the max budget across all providers
@@ -251,7 +263,7 @@ _litellm_completion_params = [
     "proxy_server_request",
     "preset_cache_key",
 ]
-_current_cost = 0  # private variable, used if max budget is set
+_current_cost = 0.0  # private variable, used if max budget is set
 error_logs: Dict = {}
 add_function_to_prompt: bool = (
     False  # if function calling not supported by api, append function call details to system prompt
@@ -268,6 +280,7 @@ s3_callback_params: Optional[Dict] = None
 generic_logger_headers: Optional[Dict] = None
 default_key_generate_params: Optional[Dict] = None
 upperbound_key_generate_params: Optional[LiteLLM_UpperboundKeyGenerateParams] = None
+key_generation_settings: Optional[StandardKeyGenerationConfig] = None
 default_internal_user_params: Optional[Dict] = None
 default_team_settings: Optional[List] = None
 max_user_budget: Optional[float] = None
@@ -275,14 +288,26 @@ default_max_internal_user_budget: Optional[float] = None
 max_internal_user_budget: Optional[float] = None
 internal_user_budget_duration: Optional[str] = None
 max_end_user_budget: Optional[float] = None
+disable_end_user_cost_tracking: Optional[bool] = None
+disable_end_user_cost_tracking_prometheus_only: Optional[bool] = None
 #### REQUEST PRIORITIZATION ####
 priority_reservation: Optional[Dict[str, float]] = None
 #### RELIABILITY ####
 REPEATED_STREAMING_CHUNK_LIMIT = 100  # catch if model starts looping the same chunk while streaming. Uses high default to prevent false positives.
+
+#### Networking settings ####
 request_timeout: float = 6000  # time in seconds
-module_level_aclient = AsyncHTTPHandler(timeout=request_timeout)
+force_ipv4: bool = (
+    False  # when True, litellm will force ipv4 for all LLM requests. Some users have seen httpx ConnectionError when using ipv6.
+)
+module_level_aclient = AsyncHTTPHandler(
+    timeout=request_timeout, client_alias="module level aclient"
+)
 module_level_client = HTTPHandler(timeout=request_timeout)
+
+#### RETRIES ####
 num_retries: Optional[int] = None  # per model endpoint
+max_fallbacks: Optional[int] = None
 default_fallbacks: Optional[List] = None
 fallbacks: Optional[List] = None
 context_window_fallbacks: Optional[List] = None
@@ -297,7 +322,7 @@ secret_manager_client: Optional[Any] = (
 )
 _google_kms_resource_name: Optional[str] = None
 _key_management_system: Optional[KeyManagementSystem] = None
-_key_management_settings: Optional[KeyManagementSettings] = None
+_key_management_settings: KeyManagementSettings = KeyManagementSettings()
 #### PII MASKING ####
 output_parse_pii: bool = False
 #############################################
@@ -339,7 +364,7 @@ model_cost = get_model_cost_map(url=model_cost_map_url)
 custom_prompt_dict: Dict[str, dict] = {}
 
 
-####### THREAD-SPECIFIC DATA ###################
+####### THREAD-SPECIFIC DATA ####################
 class MyLocal(threading.local):
     def __init__(self):
         self.user = "Hello World"
@@ -362,12 +387,38 @@ organization = None
 project = None
 config_path = None
 vertex_ai_safety_settings: Optional[dict] = None
+BEDROCK_CONVERSE_MODELS = [
+    "anthropic.claude-3-5-haiku-20241022-v1:0",
+    "anthropic.claude-3-5-sonnet-20241022-v2:0",
+    "anthropic.claude-3-5-sonnet-20240620-v1:0",
+    "anthropic.claude-3-opus-20240229-v1:0",
+    "anthropic.claude-3-sonnet-20240229-v1:0",
+    "anthropic.claude-3-haiku-20240307-v1:0",
+    "anthropic.claude-v2",
+    "anthropic.claude-v2:1",
+    "anthropic.claude-v1",
+    "anthropic.claude-instant-v1",
+    "ai21.jamba-instruct-v1:0",
+    "meta.llama3-70b-instruct-v1:0",
+    "meta.llama3-8b-instruct-v1:0",
+    "meta.llama3-1-8b-instruct-v1:0",
+    "meta.llama3-1-70b-instruct-v1:0",
+    "meta.llama3-1-405b-instruct-v1:0",
+    "meta.llama3-70b-instruct-v1:0",
+    "mistral.mistral-large-2407-v1:0",
+    "meta.llama3-2-1b-instruct-v1:0",
+    "meta.llama3-2-3b-instruct-v1:0",
+    "meta.llama3-2-11b-instruct-v1:0",
+    "meta.llama3-2-90b-instruct-v1:0",
+    "meta.llama3-2-405b-instruct-v1:0",
+]
 ####### COMPLETION MODELS ###################
 open_ai_chat_completion_models: List = []
 open_ai_text_completion_models: List = []
 cohere_models: List = []
 cohere_chat_models: List = []
 mistral_chat_models: List = []
+text_completion_codestral_models: List = []
 anthropic_models: List = []
 empower_models: List = []
 openrouter_models: List = []
@@ -388,12 +439,27 @@ ai21_chat_models: List = []
 nlp_cloud_models: List = []
 aleph_alpha_models: List = []
 bedrock_models: List = []
+bedrock_converse_models: List = BEDROCK_CONVERSE_MODELS
 fireworks_ai_models: List = []
 fireworks_ai_embedding_models: List = []
 deepinfra_models: List = []
 perplexity_models: List = []
 watsonx_models: List = []
 gemini_models: List = []
+xai_models: List = []
+deepseek_models: List = []
+azure_ai_models: List = []
+voyage_models: List = []
+databricks_models: List = []
+cloudflare_models: List = []
+codestral_models: List = []
+friendliai_models: List = []
+palm_models: List = []
+groq_models: List = []
+azure_models: List = []
+anyscale_models: List = []
+cerebras_models: List = []
+galadriel_models: List = []
 
 
 def add_known_models():
@@ -454,6 +520,8 @@ def add_known_models():
             aleph_alpha_models.append(key)
         elif value.get("litellm_provider") == "bedrock":
             bedrock_models.append(key)
+        elif value.get("litellm_provider") == "bedrock_converse":
+            bedrock_converse_models.append(key)
         elif value.get("litellm_provider") == "deepinfra":
             deepinfra_models.append(key)
         elif value.get("litellm_provider") == "perplexity":
@@ -470,6 +538,36 @@ def add_known_models():
             # ignore the 'up-to', '-to-' model names -> not real models. just for cost tracking based on model params.
             if "-to-" not in key:
                 fireworks_ai_embedding_models.append(key)
+        elif value.get("litellm_provider") == "text-completion-codestral":
+            text_completion_codestral_models.append(key)
+        elif value.get("litellm_provider") == "xai":
+            xai_models.append(key)
+        elif value.get("litellm_provider") == "deepseek":
+            deepseek_models.append(key)
+        elif value.get("litellm_provider") == "azure_ai":
+            azure_ai_models.append(key)
+        elif value.get("litellm_provider") == "voyage":
+            voyage_models.append(key)
+        elif value.get("litellm_provider") == "databricks":
+            databricks_models.append(key)
+        elif value.get("litellm_provider") == "cloudflare":
+            cloudflare_models.append(key)
+        elif value.get("litellm_provider") == "codestral":
+            codestral_models.append(key)
+        elif value.get("litellm_provider") == "friendliai":
+            friendliai_models.append(key)
+        elif value.get("litellm_provider") == "palm":
+            palm_models.append(key)
+        elif value.get("litellm_provider") == "groq":
+            groq_models.append(key)
+        elif value.get("litellm_provider") == "azure":
+            azure_models.append(key)
+        elif value.get("litellm_provider") == "anyscale":
+            anyscale_models.append(key)
+        elif value.get("litellm_provider") == "cerebras":
+            cerebras_models.append(key)
+        elif value.get("litellm_provider") == "galadriel":
+            galadriel_models.append(key)
 
 
 add_known_models()
@@ -488,6 +586,8 @@ openai_compatible_endpoints: List = [
     "app.empower.dev/api/v1",
     "inference.friendli.ai/v1",
     "api.sambanova.ai/v1",
+    "api.x.ai/v1",
+    "api.galadriel.ai/v1",
 ]
 
 # this is maintained for Exception Mapping
@@ -505,6 +605,7 @@ openai_compatible_providers: List = [
     "deepinfra",
     "perplexity",
     "xinference",
+    "xai",
     "together_ai",
     "fireworks_ai",
     "empower",
@@ -513,6 +614,8 @@ openai_compatible_providers: List = [
     "github",
     "litellm_proxy",
     "hosted_vllm",
+    "lm_studio",
+    "galadriel",
 ]
 openai_text_completion_compatible_providers: List = (
     [  # providers that support `/v1/completions`
@@ -521,7 +624,11 @@ openai_text_completion_compatible_providers: List = (
         "hosted_vllm",
     ]
 )
-
+_openai_like_providers: List = [
+    "predibase",
+    "databricks",
+    "watsonx",
+]  # private helper. similar to openai but require some custom auth / endpoint handling, so can't use the openai sdk
 # well supported replicate llms
 replicate_models: List = [
     # llama replicate supported LLMs
@@ -708,6 +815,21 @@ model_list = (
     + vertex_language_models
     + watsonx_models
     + gemini_models
+    + text_completion_codestral_models
+    + xai_models
+    + deepseek_models
+    + azure_ai_models
+    + voyage_models
+    + databricks_models
+    + cloudflare_models
+    + codestral_models
+    + friendliai_models
+    + palm_models
+    + groq_models
+    + azure_models
+    + anyscale_models
+    + cerebras_models
+    + galadriel_models
 )
 
 
@@ -715,6 +837,7 @@ class LlmProviders(str, Enum):
     OPENAI = "openai"
     OPENAI_LIKE = "openai_like"  # embedding only
     JINA_AI = "jina_ai"
+    XAI = "xai"
     CUSTOM_OPENAI = "custom_openai"
     TEXT_COMPLETION_OPENAI = "text-completion-openai"
     COHERE = "cohere"
@@ -763,6 +886,7 @@ class LlmProviders(str, Enum):
     FIREWORKS_AI = "fireworks_ai"
     FRIENDLIAI = "friendliai"
     WATSONX = "watsonx"
+    WATSONX_TEXT = "watsonx_text"
     TRITON = "triton"
     PREDIBASE = "predibase"
     DATABRICKS = "databricks"
@@ -771,6 +895,8 @@ class LlmProviders(str, Enum):
     CUSTOM = "custom"
     LITELLM_PROXY = "litellm_proxy"
     HOSTED_VLLM = "hosted_vllm"
+    LM_STUDIO = "lm_studio"
+    GALADRIEL = "galadriel"
 
 
 provider_list: List[Union[LlmProviders, str]] = list(LlmProviders)
@@ -778,6 +904,7 @@ provider_list: List[Union[LlmProviders, str]] = list(LlmProviders)
 
 models_by_provider: dict = {
     "openai": open_ai_chat_completion_models + open_ai_text_completion_models,
+    "text-completion-openai": open_ai_text_completion_models,
     "cohere": cohere_models + cohere_chat_models,
     "cohere_chat": cohere_chat_models,
     "anthropic": anthropic_models,
@@ -792,7 +919,7 @@ models_by_provider: dict = {
     + vertex_vision_models
     + vertex_language_models,
     "ai21": ai21_models,
-    "bedrock": bedrock_models,
+    "bedrock": bedrock_models + bedrock_converse_models,
     "petals": petals_models,
     "ollama": ollama_models,
     "deepinfra": deepinfra_models,
@@ -801,6 +928,24 @@ models_by_provider: dict = {
     "watsonx": watsonx_models,
     "gemini": gemini_models,
     "fireworks_ai": fireworks_ai_models + fireworks_ai_embedding_models,
+    "aleph_alpha": aleph_alpha_models,
+    "text-completion-codestral": text_completion_codestral_models,
+    "xai": xai_models,
+    "deepseek": deepseek_models,
+    "mistral": mistral_chat_models,
+    "azure_ai": azure_ai_models,
+    "voyage": voyage_models,
+    "databricks": databricks_models,
+    "cloudflare": cloudflare_models,
+    "codestral": codestral_models,
+    "nlp_cloud": nlp_cloud_models,
+    "friendliai": friendliai_models,
+    "palm": palm_models,
+    "groq": groq_models,
+    "azure": azure_models,
+    "anyscale": anyscale_models,
+    "cerebras": cerebras_models,
+    "galadriel": galadriel_models,
 }
 
 # mapping for those models which have larger equivalents
@@ -870,10 +1015,11 @@ from .utils import (
     supports_response_schema,
     supports_parallel_function_calling,
     supports_vision,
+    supports_audio_input,
+    supports_audio_output,
     supports_system_messages,
     get_litellm_params,
     acreate,
-    get_model_list,
     get_max_tokens,
     get_model_info,
     register_prompt_template,
@@ -913,7 +1059,8 @@ from .llms.anthropic.experimental_pass_through.transformation import (
 )
 from .llms.groq.stt.transformation import GroqSTTConfig
 from .llms.anthropic.completion import AnthropicTextConfig
-from .llms.databricks.chat import DatabricksConfig, DatabricksEmbeddingConfig
+from .llms.databricks.chat.transformation import DatabricksConfig
+from .llms.databricks.embed.transformation import DatabricksEmbeddingConfig
 from .llms.predibase import PredibaseConfig
 from .llms.replicate import ReplicateConfig
 from .llms.cohere.completion import CohereConfig
@@ -958,9 +1105,6 @@ from .llms.bedrock.chat.invoke_handler import (
     AmazonConverseConfig,
     bedrock_tool_name_mappings,
 )
-from .llms.bedrock.chat.converse_handler import (
-    BEDROCK_CONVERSE_MODELS,
-)
 from .llms.bedrock.common_utils import (
     AmazonTitanConfig,
     AmazonAI21Config,
@@ -968,10 +1112,11 @@ from .llms.bedrock.common_utils import (
     AmazonAnthropicClaude3Config,
     AmazonCohereConfig,
     AmazonLlamaConfig,
-    AmazonStabilityConfig,
     AmazonMistralConfig,
     AmazonBedrockGlobalConfig,
 )
+from .llms.bedrock.image.amazon_stability1_transformation import AmazonStabilityConfig
+from .llms.bedrock.image.amazon_stability3_transformation import AmazonStability3Config
 from .llms.bedrock.embed.amazon_titan_g1_transformation import AmazonTitanG1Config
 from .llms.bedrock.embed.amazon_titan_multimodal_transformation import (
     AmazonTitanMultimodalEmbeddingG1Config,
@@ -1019,6 +1164,7 @@ from .llms.fireworks_ai.embed.fireworks_ai_transformation import (
     FireworksAIEmbeddingConfig,
 )
 from .llms.jina_ai.embedding.transformation import JinaAIEmbeddingConfig
+from .llms.xai.chat.xai_transformation import XAIChatConfig
 from .llms.volcengine import VolcEngineConfig
 from .llms.text_completion_codestral import MistralTextCompletionConfig
 from .llms.AzureOpenAI.azure import (
@@ -1028,9 +1174,13 @@ from .llms.AzureOpenAI.azure import (
 
 from .llms.AzureOpenAI.chat.gpt_transformation import AzureOpenAIConfig
 from .llms.hosted_vllm.chat.transformation import HostedVLLMChatConfig
+from .llms.deepseek.chat.transformation import DeepSeekChatConfig
+from .llms.lm_studio.chat.transformation import LMStudioChatConfig
+from .llms.lm_studio.embed.transformation import LmStudioEmbeddingConfig
 from .llms.perplexity.chat.transformation import PerplexityChatConfig
 from .llms.AzureOpenAI.chat.o1_transformation import AzureOpenAIO1Config
-from .llms.watsonx import IBMWatsonXAIConfig
+from .llms.watsonx.completion.handler import IBMWatsonXAIConfig
+from .llms.watsonx.chat.transformation import IBMWatsonXChatConfig
 from .main import *  # type: ignore
 from .integrations import *
 from .exceptions import (

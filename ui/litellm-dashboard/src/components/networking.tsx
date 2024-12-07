@@ -255,6 +255,43 @@ export const budgetCreateCall = async (
   }
 };
 
+export const budgetUpdateCall = async (
+  accessToken: string,
+  formValues: Record<string, any> // Assuming formValues is an object
+) => {
+  try {
+    console.log("Form Values in budgetUpdateCall:", formValues); // Log the form values before making the API call
+
+    console.log("Form Values after check:", formValues);
+    const url = proxyBaseUrl ? `${proxyBaseUrl}/budget/update` : `/budget/update`;
+    const response = await fetch(url, {
+      method: "POST",
+      headers: {
+        [globalLitellmHeaderName]: `Bearer ${accessToken}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        ...formValues, // Include formValues in the request body
+      }),
+    });
+
+    if (!response.ok) {
+      const errorData = await response.text();
+      handleError(errorData);
+      console.error("Error response from the server:", errorData);
+      throw new Error("Network response was not ok");
+    }
+
+    const data = await response.json();
+    console.log("API Response:", data);
+    return data;
+    // Handle success - you might want to update some state or UI based on the created key
+  } catch (error) {
+    console.error("Failed to create key:", error);
+    throw error;
+  }
+};
+
 export const invitationCreateCall = async (
   accessToken: string,
   userID: string // Assuming formValues is an object
@@ -671,7 +708,8 @@ export const teamInfoCall = async (
 };
 
 export const teamListCall = async (
-  accessToken: String,
+  accessToken: String, 
+  userID: String | null = null
 ) => {
   /**
    * Get all available teams on proxy
@@ -679,6 +717,9 @@ export const teamListCall = async (
   try {
     let url = proxyBaseUrl ? `${proxyBaseUrl}/team/list` : `/team/list`;
     console.log("in teamInfoCall");
+    if (userID) {
+      url += `?user_id=${userID}`;
+    }
     const response = await fetch(url, {
       method: "GET",
       headers: {

@@ -1,4 +1,5 @@
 import copy
+import time
 from typing import TYPE_CHECKING, Any, Dict, Optional, Union
 
 from fastapi import Request
@@ -6,6 +7,7 @@ from starlette.datastructures import Headers
 
 import litellm
 from litellm._logging import verbose_logger, verbose_proxy_logger
+from litellm._service_logger import ServiceLogging
 from litellm.proxy._types import (
     AddTeamCallback,
     CommonProxyErrors,
@@ -16,10 +18,14 @@ from litellm.proxy._types import (
     UserAPIKeyAuth,
 )
 from litellm.proxy.auth.auth_utils import get_request_route
+from litellm.types.services import ServiceTypes
 from litellm.types.utils import (
     StandardLoggingUserAPIKeyMetadata,
     SupportedCacheControls,
 )
+
+service_logger_obj = ServiceLogging()  # used for tracking latency on OTEL
+
 
 if TYPE_CHECKING:
     from litellm.proxy.proxy_server import ProxyConfig as _ProxyConfig
@@ -268,6 +274,75 @@ class LiteLLMProxyRequestSetup:
         )
         return user_api_key_logged_metadata
 
+    @staticmethod
+    def add_key_level_controls(
+        key_metadata: dict, data: dict, _metadata_variable_name: str
+    ):
+        data = data.copy()
+        if "cache" in key_metadata:
+            data["cache"] = {}
+            if isinstance(key_metadata["cache"], dict):
+                for k, v in key_metadata["cache"].items():
+                    if k in SupportedCacheControls:
+                        data["cache"][k] = v
+
+        ## KEY-LEVEL SPEND LOGS / TAGS
+        if "tags" in key_metadata and key_metadata["tags"] is not None:
+            data[_metadata_variable_name]["tags"] = (
+                LiteLLMProxyRequestSetup._merge_tags(
+                    request_tags=data[_metadata_variable_name].get("tags"),
+                    tags_to_add=key_metadata["tags"],
+                )
+            )
+        if "spend_logs_metadata" in key_metadata and isinstance(
+            key_metadata["spend_logs_metadata"], dict
+        ):
+            if "spend_logs_metadata" in data[_metadata_variable_name] and isinstance(
+                data[_metadata_variable_name]["spend_logs_metadata"], dict
+            ):
+                for key, value in key_metadata["spend_logs_metadata"].items():
+                    if (
+                        key not in data[_metadata_variable_name]["spend_logs_metadata"]
+                    ):  # don't override k-v pair sent by request (user request)
+                        data[_metadata_variable_name]["spend_logs_metadata"][
+                            key
+                        ] = value
+            else:
+                data[_metadata_variable_name]["spend_logs_metadata"] = key_metadata[
+                    "spend_logs_metadata"
+                ]
+
+        ## KEY-LEVEL DISABLE FALLBACKS
+        if "disable_fallbacks" in key_metadata and isinstance(
+            key_metadata["disable_fallbacks"], bool
+        ):
+            data["disable_fallbacks"] = key_metadata["disable_fallbacks"]
+        return data
+
+    @staticmethod
+    def _merge_tags(request_tags: Optional[list], tags_to_add: Optional[list]) -> list:
+        """
+        Helper function to merge two lists of tags, ensuring no duplicates.
+
+        Args:
+            request_tags (Optional[list]): List of tags from the original request
+            tags_to_add (Optional[list]): List of tags to add
+
+        Returns:
+            list: Combined list of unique tags
+        """
+        final_tags = []
+
+        if request_tags and isinstance(request_tags, list):
+            final_tags.extend(request_tags)
+
+        if tags_to_add and isinstance(tags_to_add, list):
+            for tag in tags_to_add:
+                if tag not in final_tags:
+                    final_tags.append(tag)
+
+        return final_tags
+
 
 async def add_litellm_data_to_request(  # noqa: PLR0915
     data: dict,
@@ -352,7 +427,7 @@ async def add_litellm_data_to_request(  # noqa: PLR0915
     if _metadata_variable_name not in data:
         data[_metadata_variable_name] = {}
 
-    # We want to log the "metadata" from the client side request. Avoid circular reference by not directly assigning metadata to itself
+    # We want to log the "metadata" from the client side request. Avoid circular reference by not directly assigning metadata to itself.
     if "metadata" in data and data["metadata"] is not None:
         data[_metadata_variable_name]["requester_metadata"] = copy.deepcopy(
             data["metadata"]
@@ -383,46 +458,18 @@ async def add_litellm_data_to_request(  # noqa: PLR0915
 
     ### KEY-LEVEL Controls
     key_metadata = user_api_key_dict.metadata
-    if "cache" in key_metadata:
-        data["cache"] = {}
-        if isinstance(key_metadata["cache"], dict):
-            for k, v in key_metadata["cache"].items():
-                if k in SupportedCacheControls:
-                    data["cache"][k] = v
-
-    ## KEY-LEVEL SPEND LOGS / TAGS
-    if "tags" in key_metadata and key_metadata["tags"] is not None:
-        if "tags" in data[_metadata_variable_name] and isinstance(
-            data[_metadata_variable_name]["tags"], list
-        ):
-            data[_metadata_variable_name]["tags"].extend(key_metadata["tags"])
-        else:
-            data[_metadata_variable_name]["tags"] = key_metadata["tags"]
-    if "spend_logs_metadata" in key_metadata and isinstance(
-        key_metadata["spend_logs_metadata"], dict
-    ):
-        if "spend_logs_metadata" in data[_metadata_variable_name] and isinstance(
-            data[_metadata_variable_name]["spend_logs_metadata"], dict
-        ):
-            for key, value in key_metadata["spend_logs_metadata"].items():
-                if (
-                    key not in data[_metadata_variable_name]["spend_logs_metadata"]
-                ):  # don't override k-v pair sent by request (user request)
-                    data[_metadata_variable_name]["spend_logs_metadata"][key] = value
-        else:
-            data[_metadata_variable_name]["spend_logs_metadata"] = key_metadata[
-                "spend_logs_metadata"
-            ]
-
+    data = LiteLLMProxyRequestSetup.add_key_level_controls(
+        key_metadata=key_metadata,
+        data=data,
+        _metadata_variable_name=_metadata_variable_name,
+    )
     ## TEAM-LEVEL SPEND LOGS/TAGS
     team_metadata = user_api_key_dict.team_metadata or {}
     if "tags" in team_metadata and team_metadata["tags"] is not None:
-        if "tags" in data[_metadata_variable_name] and isinstance(
-            data[_metadata_variable_name]["tags"], list
-        ):
-            data[_metadata_variable_name]["tags"].extend(team_metadata["tags"])
-        else:
-            data[_metadata_variable_name]["tags"] = team_metadata["tags"]
+        data[_metadata_variable_name]["tags"] = LiteLLMProxyRequestSetup._merge_tags(
+            request_tags=data[_metadata_variable_name].get("tags"),
+            tags_to_add=team_metadata["tags"],
+        )
     if "spend_logs_metadata" in team_metadata and isinstance(
         team_metadata["spend_logs_metadata"], dict
     ):
@@ -471,7 +518,7 @@ async def add_litellm_data_to_request(  # noqa: PLR0915
     ### END-USER SPECIFIC PARAMS ###
     if user_api_key_dict.allowed_model_region is not None:
         data["allowed_model_region"] = user_api_key_dict.allowed_model_region
-
+    start_time = time.time()
     ## [Enterprise Only]
     # Add User-IP Address
     requester_ip_address = ""
@@ -539,7 +586,85 @@ async def add_litellm_data_to_request(  # noqa: PLR0915
     verbose_proxy_logger.debug(
         f"[PROXY]returned data from litellm_pre_call_utils: {data}"
     )
+
+    ## ENFORCED PARAMS CHECK
+    # loop through each enforced param
+    # example enforced_params ['user', 'metadata', 'metadata.generation_name']
+    _enforced_params_check(
+        request_body=data,
+        general_settings=general_settings,
+        user_api_key_dict=user_api_key_dict,
+        premium_user=premium_user,
+    )
+
+    end_time = time.time()
+    await service_logger_obj.async_service_success_hook(
+        service=ServiceTypes.PROXY_PRE_CALL,
+        duration=end_time - start_time,
+        call_type="add_litellm_data_to_request",
+        start_time=start_time,
+        end_time=end_time,
+        parent_otel_span=user_api_key_dict.parent_otel_span,
+    )
     return data
+
+
+def _get_enforced_params(
+    general_settings: Optional[dict], user_api_key_dict: UserAPIKeyAuth
+) -> Optional[list]:
+    enforced_params: Optional[list] = None
+    if general_settings is not None:
+        enforced_params = general_settings.get("enforced_params")
+        if "service_account_settings" in general_settings:
+            service_account_settings = general_settings["service_account_settings"]
+            if "enforced_params" in service_account_settings:
+                if enforced_params is None:
+                    enforced_params = []
+                enforced_params.extend(service_account_settings["enforced_params"])
+    if user_api_key_dict.metadata.get("enforced_params", None) is not None:
+        if enforced_params is None:
+            enforced_params = []
+        enforced_params.extend(user_api_key_dict.metadata["enforced_params"])
+    return enforced_params
+
+
+def _enforced_params_check(
+    request_body: dict,
+    general_settings: Optional[dict],
+    user_api_key_dict: UserAPIKeyAuth,
+    premium_user: bool,
+) -> bool:
+    """
+    If enforced params are set, check if the request body contains the enforced params.
+    """
+    enforced_params: Optional[list] = _get_enforced_params(
+        general_settings=general_settings, user_api_key_dict=user_api_key_dict
+    )
+    if enforced_params is None:
+        return True
+    if enforced_params is not None and premium_user is not True:
+        raise ValueError(
+            f"Enforced Params is an Enterprise feature. Enforced Params: {enforced_params}. {CommonProxyErrors.not_premium_user.value}"
+        )
+
+    for enforced_param in enforced_params:
+        _enforced_params = enforced_param.split(".")
+        if len(_enforced_params) == 1:
+            if _enforced_params[0] not in request_body:
+                raise ValueError(
+                    f"BadRequest please pass param={_enforced_params[0]} in request body. This is a required param"
+                )
+        elif len(_enforced_params) == 2:
+            # this is a scenario where user requires request['metadata']['generation_name'] to exist
+            if _enforced_params[0] not in request_body:
+                raise ValueError(
+                    f"BadRequest please pass param={_enforced_params[0]} in request body. This is a required param"
+                )
+            if _enforced_params[1] not in request_body[_enforced_params[0]]:
+                raise ValueError(
+                    f"BadRequest please pass param=[{_enforced_params[0]}][{_enforced_params[1]}] in request body. This is a required param"
+                )
+    return True
 
 
 def move_guardrails_to_metadata(
