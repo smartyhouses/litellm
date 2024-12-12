@@ -22,11 +22,11 @@ from litellm.litellm_core_utils.llm_cost_calc.utils import _generic_cost_per_cha
 from litellm.llms.anthropic.cost_calculation import (
     cost_per_token as anthropic_cost_per_token,
 )
+from litellm.llms.azure.cost_calculation import (
+    cost_per_token as azure_openai_cost_per_token,
+)
 from litellm.llms.azure_ai.cost_calculator import (
     cost_per_query as azure_ai_rerank_cost_per_query,
-)
-from litellm.llms.AzureOpenAI.cost_calculation import (
-    cost_per_token as azure_openai_cost_per_token,
 )
 from litellm.llms.bedrock.image.cost_calculator import (
     cost_calculator as bedrock_image_cost_calculator,
@@ -40,13 +40,13 @@ from litellm.llms.databricks.cost_calculator import (
 from litellm.llms.fireworks_ai.cost_calculator import (
     cost_per_token as fireworks_ai_cost_per_token,
 )
-from litellm.llms.OpenAI.cost_calculation import (
+from litellm.llms.openai.cost_calculation import (
     cost_per_second as openai_cost_per_second,
 )
-from litellm.llms.OpenAI.cost_calculation import cost_per_token as openai_cost_per_token
-from litellm.llms.OpenAI.cost_calculation import cost_router as openai_cost_router
+from litellm.llms.openai.cost_calculation import cost_per_token as openai_cost_per_token
+from litellm.llms.openai.cost_calculation import cost_router as openai_cost_router
 from litellm.llms.together_ai.cost_calculator import get_model_params_and_category
-from litellm.llms.vertex_ai_and_google_ai_studio.image_generation.cost_calculator import (
+from litellm.llms.vertex_ai.image_generation.cost_calculator import (
     cost_calculator as vertex_ai_image_cost_calculator,
 )
 from litellm.types.llms.openai import HttpxBinaryResponseContent

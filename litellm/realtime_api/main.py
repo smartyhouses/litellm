@@ -9,8 +9,8 @@ from litellm.secret_managers.main import get_secret_str
 from litellm.types.router import GenericLiteLLMParams
 
 from ..litellm_core_utils.litellm_logging import Logging as LiteLLMLogging
-from ..llms.AzureOpenAI.realtime.handler import AzureOpenAIRealtime
-from ..llms.OpenAI.realtime.handler import OpenAIRealtime
+from ..llms.azure.realtime.handler import AzureOpenAIRealtime
+from ..llms.openai.realtime.handler import OpenAIRealtime
 from ..utils import client as wrapper_client
 
 azure_realtime = AzureOpenAIRealtime()
