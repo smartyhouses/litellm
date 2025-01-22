@@ -177,7 +177,7 @@ litellm_settings:
   #cooldown_time: 1 # how long to cooldown model if fails/min > allowed_fails
   #enable_json_schema_validation: true
   drop_params: True
-  add_function_to_prompt: True
+  #add_function_to_prompt: True
   modify_params: True
   default_fallbacks: ["gpt-4"]
   #fallbacks: [{"gpt-4": ["grklarge","grklarge2","grklarge3","grklarge4","mistral/mistral-large-2411","mistral/mistral-large-2402","mistral/mistral-large-2407","mistral/mistral-large-2411","groq/llama3-groq-70b-8192-tool-use-preview","groq/llama-3.3-70b-specdec","groq/llama3-groq-8b-8192-tool-use-preview","groq/llama-3.3-70b-versatile","groq/gemma2-9b-it","mmed","groq/llama-3.3-70b-versatile","groq/gemma2-9b-it","groq/open-mixtral-8x22b","openai/gpt-4o-mini","openai/gpt-4o-mini-2024-07-18","mixtral-8x7b-32768"]}, {"gpt-4o-mini": ["gpt-4o-mini-2024-07-18"]}, {"mmed": ["gpt-4o-mini-2024-07-18"]}, {"embedding": ["text-embedding-3-large","text-embedding-3-small","text-embedding-ada-002"]}, {"mistral/pixtral-12b-latest": ["vision","mistral/pixtral-12b-2409","groq/llama-3.2-11b-vision-preview","groq/llama-3.2-90b-vision-preview","gpt-4o-mini"]}, {"mmed": ["mistral/mistral-medium-2312","mistral/mistral-medium-2312","mistral/open-mixtral-8x22b","groq/llama-3.3-70b-specdec","gpt-4o-mini"]}, {"gpt-4": ["gpt-4"]}]
