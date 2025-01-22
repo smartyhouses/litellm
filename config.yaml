@@ -189,7 +189,7 @@ litellm_settings:
   retry: True
   cache: True
   cache_params:
-    type: redis
+    type: local #redis
     host: os.environ/REDIS_HOST
     port: os.environ/REDIS_PORT
     password: os.environ/REDIS_PASSWORD
