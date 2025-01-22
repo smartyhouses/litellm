@@ -171,18 +171,18 @@ model_list:
   #    rpm: 480
 
 litellm_settings:
-  #set_verbose: True  # Uncomment this if you want to see verbose logs; not recommended in production
-  #max_budget: 99999
   log_raw_request_response: True
-  #budget_duration: 30d
-  #allowed_fails: 2 # cooldown model if it fails > 1 call in a minute. 
-  #cooldown_time: 1 # how long to cooldown model if fails/min > allowed_fails
-  #enable_json_schema_validation: true
   drop_params: true
   add_function_to_prompt: true
   modify_params: true
   default_fallbacks: ["gpt-4"]
+  #enable_json_schema_validation: true
   #fallbacks: [{"gpt-4": ["grklarge","grklarge2","grklarge3","grklarge4","mistral/mistral-large-2411","mistral/mistral-large-2402","mistral/mistral-large-2407","mistral/mistral-large-2411","groq/llama3-groq-70b-8192-tool-use-preview","groq/llama-3.3-70b-specdec","groq/llama3-groq-8b-8192-tool-use-preview","groq/llama-3.3-70b-versatile","groq/gemma2-9b-it","mmed","groq/llama-3.3-70b-versatile","groq/gemma2-9b-it","groq/open-mixtral-8x22b","openai/gpt-4o-mini","openai/gpt-4o-mini-2024-07-18","mixtral-8x7b-32768"]}, {"gpt-4o-mini": ["gpt-4o-mini-2024-07-18"]}, {"mmed": ["gpt-4o-mini-2024-07-18"]}, {"embedding": ["text-embedding-3-large","text-embedding-3-small","text-embedding-ada-002"]}, {"mistral/pixtral-12b-latest": ["vision","mistral/pixtral-12b-2409","groq/llama-3.2-11b-vision-preview","groq/llama-3.2-90b-vision-preview","gpt-4o-mini"]}, {"mmed": ["mistral/mistral-medium-2312","mistral/mistral-medium-2312","mistral/open-mixtral-8x22b","groq/llama-3.3-70b-specdec","gpt-4o-mini"]}, {"gpt-4": ["gpt-4"]}]
+  #set_verbose: True  # Uncomment this if you want to see verbose logs; not recommended in production
+  #max_budget: 99999
+  #budget_duration: 30d
+  #allowed_fails: 2 # cooldown model if it fails > 1 call in a minute. 
+  #cooldown_time: 1 # how long to cooldown model if fails/min > allowed_fails
   #content_policy_fallbacks: [{"gpt-3.5-turbo-small": ["claude-opus"]}]
   #context_window_fallbacks: [{"gpt-4o": ["gpt-4o-mini"]}]
   #request_timeout: 4 # raise Timeout error if call takes longer than 10s. Sets litellm.request_timeout 
@@ -190,11 +190,14 @@ litellm_settings:
   telemetry: False
   retry: true
   cache_params:        # set cache params for redis
-    type: local #redis
-    #namespace: "litellm_caching"
-    #host: os.environ/LITELLM_REDIS_HOST
-    #port: os.environ/LITELLM_REDIS_PORT
-    #password: os.environ/LITELLM_REDIS_PASSWORD
+    type: redis
+    namespace: "litellm_caching"
+    user: os.environ/REDIS_USER
+    host: os.environ/REDIS_HOST
+    port: os.environ/REDIS_PORT
+    password: os.environ/REDIS_PASSWORD
+    #redis_url: os.environ/REDIS_URL
+
 
   #default_team_settings: 
   #  - team_id: team-1
