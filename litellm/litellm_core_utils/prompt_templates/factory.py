@@ -1421,6 +1421,8 @@ def anthropic_messages_pt(  # noqa: PLR0915
                             )
 
                             user_content.append(_content_element)
+                        elif m.get("type", "") == "document":
+                            user_content.append(cast(AnthropicMessagesDocumentParam, m))
                 elif isinstance(user_message_types_block["content"], str):
                     _anthropic_content_text_element: AnthropicMessagesTextParam = {
                         "type": "text",
@@ -2307,7 +2309,7 @@ class BedrockImageProcessor:
         """Synchronous image processing."""
         if "base64" in image_url:
             img_bytes, mime_type, image_format = cls._parse_base64_image(image_url)
-        elif "https:/" in image_url:
+        elif "http://" in image_url or "https://" in image_url:
             img_bytes, mime_type = BedrockImageProcessor.get_image_details(image_url)
             image_format = mime_type.split("/")[1]
         else:

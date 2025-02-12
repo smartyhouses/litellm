@@ -54,7 +54,7 @@ class OpenAIOSeriesConfig(OpenAIGPTConfig):
 
         if model is None:
             return True
-        supported_stream_models = ["o1-mini", "o1-preview"]
+        supported_stream_models = ["o1-mini", "o1-preview", "o3-mini"]
         for supported_model in supported_stream_models:
             if supported_model in model:
                 return False
@@ -130,7 +130,7 @@ class OpenAIOSeriesConfig(OpenAIGPTConfig):
                         pass
                     else:
                         raise litellm.utils.UnsupportedParamsError(
-                            message="O-1 doesn't support temperature={}. To drop unsupported openai params from the call, set `litellm.drop_params = True`".format(
+                            message="O-series models don't support temperature={}. Only temperature=1 is supported. To drop unsupported openai params from the call, set `litellm.drop_params = True`".format(
                                 temperature_value
                             ),
                             status_code=400,

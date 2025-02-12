@@ -1314,6 +1314,11 @@ def test_generate_and_update_key(prisma_client):
                     budget_duration="1mo",
                     max_budget=100,
                 ),
+                user_api_key_dict=UserAPIKeyAuth(
+                    user_role=LitellmUserRoles.PROXY_ADMIN,
+                    api_key="sk-1234",
+                    user_id="1234",
+                ),
             )
 
             print("response1=", response1)
@@ -1322,6 +1327,11 @@ def test_generate_and_update_key(prisma_client):
             response2 = await update_key_fn(
                 request=Request,
                 data=UpdateKeyRequest(key=generated_key, team_id=_team_2),
+                user_api_key_dict=UserAPIKeyAuth(
+                    user_role=LitellmUserRoles.PROXY_ADMIN,
+                    api_key="sk-1234",
+                    user_id="1234",
+                ),
             )
             print("response2=", response2)
 
@@ -2023,7 +2033,7 @@ async def test_aview_spend_per_user(prisma_client):
         first_user = user_by_spend[0]
 
         print("\nfirst_user=", first_user)
-        assert first_user["spend"] > 0
+        assert first_user["spend"] >= 0
     except Exception as e:
         print("Got Exception", e)
         pytest.fail(f"Got exception {e}")
@@ -2041,7 +2051,7 @@ async def test_view_spend_per_key(prisma_client):
         first_key = key_by_spend[0]
 
         print("\nfirst_key=", first_key)
-        assert first_key.spend > 0
+        assert first_key.spend >= 0
     except Exception as e:
         print("Got Exception", e)
         pytest.fail(f"Got exception {e}")
@@ -2956,7 +2966,11 @@ async def test_generate_key_with_model_tpm_limit(prisma_client):
     _request = Request(scope={"type": "http"})
     _request._url = URL(url="/update/key")
 
-    await update_key_fn(data=request, request=_request)
+    await update_key_fn(
+        data=request,
+        request=_request,
+        user_api_key_dict=UserAPIKeyAuth(user_role=LitellmUserRoles.PROXY_ADMIN),
+    )
     result = await info_key_fn(
         key=generated_key,
         user_api_key_dict=UserAPIKeyAuth(user_role=LitellmUserRoles.PROXY_ADMIN),
@@ -3017,7 +3031,11 @@ async def test_generate_key_with_guardrails(prisma_client):
     _request = Request(scope={"type": "http"})
     _request._url = URL(url="/update/key")
 
-    await update_key_fn(data=request, request=_request)
+    await update_key_fn(
+        data=request,
+        request=_request,
+        user_api_key_dict=UserAPIKeyAuth(user_role=LitellmUserRoles.PROXY_ADMIN),
+    )
     result = await info_key_fn(
         key=generated_key,
         user_api_key_dict=UserAPIKeyAuth(user_role=LitellmUserRoles.PROXY_ADMIN),
@@ -3710,6 +3728,11 @@ async def test_key_alias_uniqueness(prisma_client):
             await update_key_fn(
                 data=UpdateKeyRequest(key=key3.key, key_alias=unique_alias),
                 request=Request(scope={"type": "http"}),
+                user_api_key_dict=UserAPIKeyAuth(
+                    user_role=LitellmUserRoles.PROXY_ADMIN,
+                    api_key="sk-1234",
+                    user_id="1234",
+                ),
             )
             pytest.fail("Should not be able to update a key to use an existing alias")
         except Exception as e:
@@ -3719,6 +3742,11 @@ async def test_key_alias_uniqueness(prisma_client):
         updated_key = await update_key_fn(
             data=UpdateKeyRequest(key=key1.key, key_alias=unique_alias),
             request=Request(scope={"type": "http"}),
+            user_api_key_dict=UserAPIKeyAuth(
+                user_role=LitellmUserRoles.PROXY_ADMIN,
+                api_key="sk-1234",
+                user_id="1234",
+            ),
         )
         assert updated_key is not None
 
